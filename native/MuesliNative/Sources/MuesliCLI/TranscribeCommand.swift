@@ -657,7 +657,7 @@ actor FluidAudioCLITranscriber: AudioTranscribing {
         if loadedModel == model, asrManager != nil { return }
         guard let asrModelVersion = model.asrModelVersion else {
             throw CLIError.invalidInput(
-                "\(model.rawValue) is a streaming model and cannot be loaded by the batch transcriber.",
+                "\(model.rawValue) is not a Parakeet batch model and cannot be loaded by FluidAudioCLITranscriber.",
                 fix: "This indicates a routing bug in muesli-cli; please file an issue."
             )
         }
@@ -949,8 +949,13 @@ final class PartialsJSONLWriter: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         guard let data = try? JSONSerialization.data(withJSONObject: ["t": t, "text": text]) else { return }
-        handle.write(data)
-        handle.write(Data("\n".utf8))
+        // `write(contentsOf:)` is the non-deprecated, throwing replacement for
+        // `write(_:)` (which can raise an uncatchable NSException on I/O failure).
+        // `record` is called from a non-throwing `onPartial` callback, so a write
+        // failure here is discarded rather than propagated — losing one partial
+        // line is preferable to crashing the whole transcription.
+        try? handle.write(contentsOf: data)
+        try? handle.write(contentsOf: Data("\n".utf8))
     }
 
     func close() {
