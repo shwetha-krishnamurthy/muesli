@@ -30,6 +30,8 @@ from pathlib import Path
 
 import jiwer
 
+from run_eval import normalize
+
 ROOT = Path(__file__).resolve().parent.parent
 DATA = ROOT / "data"
 RESULTS = ROOT / "results"
@@ -72,20 +74,13 @@ def transcribe_with_dictionary(cli: str, wav: Path, model: str, entries: list[di
         if proc.returncode != 0:
             raise RuntimeError(f"muesli-cli failed on {wav.name}: {proc.stderr.strip()[:300]}")
         stdout = proc.stdout
-        obj, _ = json.JSONDecoder().raw_decode(stdout[stdout.index("{"):])
-        return obj["data"]["transcript"]
+        try:
+            obj, _ = json.JSONDecoder().raw_decode(stdout[stdout.index("{"):])
+            return obj["data"]["transcript"]
+        except (ValueError, KeyError) as e:
+            raise RuntimeError(f"muesli-cli returned unparseable output for {wav.name}: {e}") from e
     finally:
         Path(dict_path).unlink(missing_ok=True)
-
-
-_PUNCT_NORMALIZE = __import__("re").compile(r"[^\w\s']", flags=__import__("re").UNICODE)
-_WS_NORMALIZE = __import__("re").compile(r"\s+")
-
-
-def normalize(text: str) -> str:
-    text = text.lower()
-    text = _PUNCT_NORMALIZE.sub(" ", text)
-    return _WS_NORMALIZE.sub(" ", text).strip()
 
 
 def main() -> None:
@@ -99,17 +94,24 @@ def main() -> None:
     if not baseline_path.exists():
         raise SystemExit(f"{baseline_path} not found — run run_eval.py --sets {args.set} --models {args.model} first")
 
-    rows = [json.loads(line) for line in open(baseline_path) if "summary" not in json.loads(line)]
+    with open(baseline_path) as f:
+        rows = [json.loads(line) for line in f if "summary" not in json.loads(line)]
     out_path = RESULTS / f"{args.set}--{args.model}--with-dictionary.jsonl"
+
+    with open(DATA / args.set / "refs.jsonl") as mf:
+        manifest_by_id = {entry["id"]: entry for entry in (json.loads(line) for line in mf)}
 
     refs, hyps_baseline, hyps_dict = [], [], []
     clips_with_entries = 0
     with open(out_path, "w") as out_f:
         for row in rows:
-            manifest_entry = next(
-                (json.loads(l) for l in open(DATA / args.set / "refs.jsonl") if json.loads(l)["id"] == row["id"]),
-                None,
-            )
+            manifest_entry = manifest_by_id.get(row["id"])
+            if manifest_entry is None:
+                # refs.jsonl was regenerated (different --count, refetched dataset)
+                # since the baseline run_eval.py result was produced; skip rather
+                # than crash on a stale row.
+                print(f"  {row['id']}  SKIPPED: not found in current refs.jsonl")
+                continue
             wav = ROOT / manifest_entry["wav"]
             entries = oracle_dictionary(row["ref"], row["hyp"])
             if entries:
@@ -130,7 +132,7 @@ def main() -> None:
         wer_baseline = jiwer.wer(refs, hyps_baseline)
         wer_dict = jiwer.wer(refs, hyps_dict)
         summary = {
-            "set": args.set, "model": args.model, "clips": len(rows),
+            "set": args.set, "model": args.model, "clips": len(refs),
             "clips_with_dictionary_entries": clips_with_entries,
             "wer_baseline": round(wer_baseline, 4),
             "wer_with_oracle_dictionary": round(wer_dict, 4),
@@ -140,7 +142,7 @@ def main() -> None:
     print(f"\n{args.set} / {args.model}")
     print(f"  baseline WER:              {summary['wer_baseline']:.1%}")
     print(f"  WER with oracle dictionary: {summary['wer_with_oracle_dictionary']:.1%}")
-    print(f"  clips where dictionary had a correction to apply: {clips_with_entries}/{len(rows)}")
+    print(f"  clips where dictionary had a correction to apply: {clips_with_entries}/{len(refs)}")
 
 
 if __name__ == "__main__":

@@ -55,7 +55,7 @@ within this harness, not across papers.
 
 Comparative WER, 40 clips/set, all 5 models this harness can currently reach:
 
-```
+```text
 set                  model          WER    failed
 earnings22           parakeet-v2   13.3%       0
 earnings22           parakeet-v3   13.7%       0

@@ -52,16 +52,23 @@ def transcribe(cli: str, wav: Path, model: str) -> tuple[str, float, float]:
     if proc.returncode != 0:
         raise RuntimeError(f"muesli-cli failed on {wav.name}: {proc.stderr.strip()[:300]}")
     # CoreML sometimes appends runtime noise (e.g. E5RT exceptions) after the
-    # JSON envelope on stdout; decode just the first JSON object.
+    # JSON envelope on stdout; decode just the first JSON object. A malformed
+    # or incomplete envelope on an otherwise-successful exit is scored as a
+    # per-clip failure by the caller, same as a non-zero exit code, rather
+    # than aborting the whole sweep.
     stdout = proc.stdout
-    obj, _ = json.JSONDecoder().raw_decode(stdout[stdout.index("{"):])
-    payload = obj["data"]
-    return payload["transcript"], payload.get("durationSeconds", 0.0), wall
+    try:
+        obj, _ = json.JSONDecoder().raw_decode(stdout[stdout.index("{"):])
+        payload = obj["data"]
+        return payload["transcript"], payload.get("durationSeconds", 0.0), wall
+    except (ValueError, KeyError) as e:
+        raise RuntimeError(f"muesli-cli returned unparseable output for {wav.name}: {e}") from e
 
 
 def run(cli: str, set_name: str, model: str) -> dict:
     manifest = DATA / set_name / "refs.jsonl"
-    refs_raw = [json.loads(line) for line in open(manifest)]
+    with open(manifest) as f:
+        refs_raw = [json.loads(line) for line in f]
     RESULTS.mkdir(exist_ok=True)
     out_path = RESULTS / f"{set_name}--{model}.jsonl"
 
